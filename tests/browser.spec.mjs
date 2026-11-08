@@ -11,6 +11,14 @@ async function save(page, text) {
   await page.getByRole("button", { name: "メモを保存", exact: true }).click();
   await expect(card(page, text)).toBeVisible();
 }
+async function pauseGeneration(page) {
+  const { promise, resolve } = Promise.withResolvers();
+  await page.route("**/api/generate", async route => {
+    await promise;
+    await route.continue().catch(() => {});
+  }, { times: 1 });
+  return resolve;
+}
 async function asUser(context, info, variant = 0) {
   const base = { "chromium-desktop": 1, "chromium-touch": 8, "webkit-iphone": 15 }[info.project.name];
   await context.addCookies([{ url: "http://127.0.0.1:4185", name: "mn_session", value: testToken(base + variant), httpOnly: true }]);
@@ -121,15 +129,20 @@ test("analysis reaches full-screen skeleton, stores a script, and supports editi
   await page.locator(".pick-row").filter({ hasText: example }).click();
   await page.getByText("2分", { exact: true }).click();
   await page.getByText("コント漫才", { exact: true }).click();
+  const release = await pauseGeneration(page);
   const response = page.waitForResponse(res => res.url().endsWith("/api/generate"));
-  await generate(page).click();
-  const dialog = page.getByRole("dialog", { name: "メモを分析して台本を作成中" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.locator(".skeleton-panel")).toHaveCount(2);
-  expect(await dialog.evaluate(el => {
-    const rect = el.getBoundingClientRect();
-    return rect.width === innerWidth && rect.height === innerHeight;
-  })).toBe(true);
+  try {
+    await generate(page).click();
+    const dialog = page.getByRole("dialog", { name: "メモを分析して台本を作成中" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator(".skeleton-panel")).toHaveCount(2);
+    expect(await dialog.evaluate(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.width === innerWidth && rect.height === innerHeight;
+    })).toBe(true);
+  } finally {
+    release();
+  }
   const request = (await response).request().postDataJSON();
   expect(request).toMatchObject({ duration: 2, style: "コント漫才", sources: [{ text: example }] });
   await expect(page.getByRole("heading", { name: "コンビニ温め相談室" })).toBeVisible();
@@ -155,9 +168,16 @@ test("generation cancellation and service error preserve the selection", async (
   await save(page, "生成失敗テスト");
   await nav(page, "ネタ作成").click();
   await page.locator(".pick-row").filter({ hasText: "生成失敗テスト" }).click();
-  await generate(page).click();
-  await page.getByRole("button", { name: "キャンセル" }).click();
-  await expect(page.locator("#loading")).not.toBeVisible();
+  const release = await pauseGeneration(page);
+  const request = page.waitForRequest("**/api/generate");
+  try {
+    await generate(page).click();
+    await request;
+    await page.getByRole("button", { name: "キャンセル" }).click();
+    await expect(page.locator("#loading")).not.toBeVisible();
+  } finally {
+    release();
+  }
   await expect(page.getByRole("checkbox", { name: /生成失敗テスト/ })).toBeChecked();
   await generate(page).click();
   await expect(page.locator("#toast")).toContainText("台本を生成できませんでした。");
@@ -166,13 +186,17 @@ test("generation cancellation and service error preserve the selection", async (
   await expect(page.getByText("台本はまだありません")).toBeVisible();
 });
 
-test("guest memo can be saved after re-opening offline", async ({ page, context }) => {
-  await page.goto("/");
-  await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
-  await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
-  await context.setOffline(true);
-  await page.reload();
-  await save(page, "オフラインで書いたメモ");
-  await page.reload();
-  await expect(card(page, "オフラインで書いたメモ")).toBeVisible();
+test.describe("offline", () => {
+  test.use({ serviceWorkers: "allow" });
+
+  test("guest memo can be saved after re-opening offline", async ({ page, context }) => {
+    await page.goto("/");
+    await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+    await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+    await context.setOffline(true);
+    await page.reload();
+    await save(page, "オフラインで書いたメモ");
+    await page.reload();
+    await expect(card(page, "オフラインで書いたメモ")).toBeVisible();
+  });
 });

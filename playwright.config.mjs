@@ -10,7 +10,7 @@ export default defineConfig({
   expect: { timeout: 7000 },
   workers: 2,
   reporter: "list",
-  use: { baseURL: origin, trace: "retain-on-failure" },
+  use: { baseURL: origin, trace: "retain-on-failure", serviceWorkers: "block" },
   projects: [
     { name: "chromium-desktop", use: { ...devices["Desktop Chrome"], ...chromiumLaunch, viewport: { width: 1280, height: 900 } } },
     { name: "chromium-touch", use: { ...devices["iPhone 14"], ...chromiumLaunch, browserName: "chromium" } },
